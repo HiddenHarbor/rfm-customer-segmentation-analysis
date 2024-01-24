@@ -1,0 +1,105 @@
+WITH live_date AS (
+  SELECT MAX(InvoiceDate) AS todaydate
+  FROM `telecomChurn.rfm` AS l
+),
+rfm_calc AS (
+  SELECT CustomerID AS customer_id,
+        MIN(DATE_DIFF(l.todaydate, InvoiceDate, DAY)) AS recency,
+        SUM(Quantity) AS frequency,
+        SUM(Quantity * UnitPrice) AS monetary
+  FROM `telecomChurn.rfm` 
+  CROSS JOIN live_date AS l
+  WHERE
+  InvoiceDate IS NOT NULL
+  GROUP BY CustomerID
+),
+rfm_scores AS (
+  SELECT customer_id,
+         recency,
+         frequency,
+         monetary,
+         NTILE(5) OVER(ORDER BY recency DESC) AS recency_score,
+         NTILE(5) OVER(ORDER BY frequency ASC) AS frequency_score,
+         NTILE(5) OVER(ORDER BY monetary ASC) AS monetary_score
+  FROM rfm_calc
+),
+rfm_avg_score AS (
+  SELECT customer_id,
+         CONCAT(recency_score, '-', frequency_score, '-', monetary_score) AS R_F_M,
+         ROUND(((recency_score + frequency_score + monetary_score) / 3), 2) AS avg_rfm_score
+  FROM rfm_scores
+),
+table1 AS (
+  SELECT
+    T1.customer_id,
+    recency,
+    frequency,
+    monetary,
+    recency_score,
+    frequency_score,
+    monetary_score,
+    R_F_M,
+    avg_rfm_score
+  FROM rfm_scores AS T1
+  JOIN rfm_avg_score AS T2
+  ON T1.customer_id = T2.customer_id
+),
+table2 AS (
+  SELECT *,
+         CASE WHEN table1.avg_rfm_score >= 2.5 THEN 'High Value'
+              WHEN table1.avg_rfm_score > 0 AND table1.avg_rfm_score < 2.5 THEN 'Low Value'
+         END AS value_segment,
+         CASE WHEN table1.frequency_score >= 4 AND table1.recency_score >= 4 AND table1.monetary_score >= 4 THEN 'VIP'
+              WHEN table1.frequency_score >= 3 AND table1.monetary_score < 4 THEN 'Regular'
+              WHEN table1.recency_score <= 3 AND table1.recency_score > 1 THEN 'Dormant'
+              WHEN table1.recency_score = 1 THEN 'Churned'
+              WHEN table1.recency_score >= 4 AND table1.frequency_score <= 4 THEN 'New Customer'
+         END AS customer_segment
+  FROM table1
+),
+table3 AS (
+  SELECT table2.value_segment,
+         COUNT(table2.customer_id) AS customer_count
+  FROM table2
+  GROUP BY table2.value_segment
+  ORDER BY customer_count
+),
+table4 AS (
+  SELECT table2.customer_segment,
+         COUNT(table2.customer_id) AS customer_count
+  FROM table2
+  GROUP BY table2.customer_segment
+  ORDER BY customer_count
+)
+-- Insights
+SELECT
+  table2.value_segment,
+  table2.customer_segment,
+  CASE
+    WHEN table2.value_segment = 'High Value' AND table2.customer_segment = 'Dormant' THEN 'Need Attention'
+    WHEN table2.value_segment = 'High Value' AND table2.customer_segment = 'VIP' THEN 'VIP'
+    WHEN table2.value_segment = 'High Value' AND table2.customer_segment = 'Regular' THEN 'Loyal Customers'
+    WHEN table2.value_segment = 'High Value' AND table2.customer_segment = 'New Customer' THEN 'Promising'
+    WHEN table2.value_segment = 'High Value' AND table2.customer_segment = 'Churned' THEN 'Churned'
+    WHEN table2.value_segment = 'Low Value' AND table2.customer_segment = 'Dormant' THEN 'Need Attention'
+    WHEN table2.value_segment = 'Low Value' AND table2.customer_segment = 'VIP' THEN 'VIP'
+    WHEN table2.value_segment = 'Low Value' AND table2.customer_segment = 'Regular' THEN 'Loyal Customers'
+    WHEN table2.value_segment = 'Low Value' AND table2.customer_segment = 'New Customer' THEN 'Promising'
+    WHEN table2.value_segment = 'Low Value' AND table2.customer_segment = 'Churned' THEN 'Churned'
+  END AS combined_segment,
+  COUNT(table2.customer_id) AS customer_count,
+  ROUND(SUM(table2.monetary),2) AS total_revenue
+FROM table2
+GROUP BY combined_segment, table2.value_segment, table2.customer_segment
+ORDER BY total_revenue DESC;
+
+
+
+
+
+
+
+
+
+
+
